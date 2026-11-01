@@ -1,67 +1,57 @@
-# StoryTold Craft Installer
+# Linux installer
 
-A Windows graphical installer for building and installing six open-source Craft applications from their upstream source repositories.
+## Requirements and scope
 
-## Supported applications
+- Ubuntu, Linux Mint or Debian with apt, a normal desktop account and a graphical X11 or Wayland session for Zenity and the apps.
+- Native x86_64 or aarch64. Other architectures are deliberately rejected by this preview.
+- Bash 4+, util-linux (`flock`, `lscpu`), and systemd-logind with permission to inhibit sleep. These normally come with the desktop OS.
+- Internet access to distro package mirrors, GitHub, crates.io and Rust distribution servers.
+- Administrator authentication through sudo (interactive CLI) or pkexec plus a desktop PolicyKit authentication agent (GUI).
+- Sufficient RAM and free disk space for large Rust workspaces. No measured minimum or compile-time promise is available. Start with `--jobs 1` on memory-constrained machines.
 
-| Application | Desktop shortcut | Source repository |
-| --- | --- | --- |
-| WordCraft | Word (WordCraft) | [storytold/wordcraft](https://github.com/storytold/wordcraft) |
-| GridCraft | Excel (GridCraft) | [storytold/gridcraft](https://github.com/storytold/gridcraft) |
-| DeckCraft | PowerPoint (DeckCraft) | [storytold/deckcraft](https://github.com/storytold/deckcraft) |
-| PDFCraft | PDF (PDFCraft) | [storytold/pdfcraft](https://github.com/storytold/pdfcraft) |
-| CADCraft | AutoCAD (CADCraft) | [storytold/cadcraft](https://github.com/storytold/cadcraft) |
-| SolidCraft | SolidWorks (SolidCraft) | [tangency-labs/solidcraft](https://github.com/tangency-labs/solidcraft) |
+The distro names are detected, but no version is advertised as fully tested. Upstream manifests currently require Rust 1.95; the installer installs/updates the rustup **stable** toolchain, leaves the default toolchain unchanged, and explicitly invokes `cargo +stable`. Cargo enforces the actual minimum version. If the stable toolchain available from your mirror is too old, installation fails with the compiler's diagnostic.
 
-The shortcut names are convenient labels, not claims of affiliation with Microsoft, Autodesk, or Dassault Systemes.
+## What is installed
 
-## Requirements
+`launch-installer.sh` bootstraps Zenity. The GUI lets you select apps, compiler parallelism and optional Desktop shortcuts. It runs the same backend as the command line. Close the log viewer without stopping the build; the GUI reports the backend's final exit status. There is no GUI cancellation during apt. To interrupt a CLI build, use Ctrl+C and rerun later.
 
-- Windows with Windows PowerShell 5.1 and a graphical desktop.
-- Internet access to download upstream sources and any missing build tools.
-- Enough disk space for Rust source builds and dependencies.
-- Administrator approval (UAC) for system-wide installation.
-- Rust/Cargo and Microsoft C++ Build Tools, or permission for the installer to install missing prerequisites.
+The backend installs build tools, selected upstream Linux headers, Mesa Vulkan runtime support and basic system fonts with apt. It does not change repositories or run a distro upgrade. apt performs a dependency-resolution simulation for the selected app headers before installing them. This checks package availability on the actual machine, rather than assuming that all releases have identical package sets.
 
-## Quick start
+The manifest pins one verified Git commit per app. Each desktop package is compiled with default features, `--release --locked`, an explicit `--bin`, and `RUSTFLAGS=-C target-cpu=native`. Web and separate CLI programs are not installed. These CPU-specific executables are intended for this computer; rebuild on another CPU or distribution.
 
-1. Download and extract this repository ZIP into a folder.
-2. Double-click **`Launch-StoryTold-Installer.bat`**. Keep the `.bat` and both `.ps1` files together.
-3. Select the applications you want and click **Start installation**.
-4. Allow any requested prerequisite installation or Windows restart.
-5. When Windows requests administrator approval, click **Yes** to finish installation and create desktop shortcuts.
+DeckCraft requires ALSA development headers. SolidCraft has its own repository, `tangency-labs/solidcraft`, and keeps its default CPU raytracing/render-library features. PDFCraft's upstream qpdf/poppler test-oracle tools are not required by this desktop-only build and are not installed. Optional `craft-fonts` checkout assets are not bundled: local builds use their upstream fallback/system font behavior. The dependencies and differences are documented in [SOURCES](../docs/SOURCES.md).
 
-Do not close the installer or leave a UAC prompt unattended. Building all six applications may take considerable time, depending on the PC.
+## Paths and reuse
 
-## How it works
+| Content | Default path |
+| --- | --- |
+| Source checkouts, pinned by revision | `~/.cache/storytold/sources/APP/COMMIT/` |
+| Cargo artifacts | `~/.cache/storytold/targets/APP/ENVIRONMENT/` |
+| Installed programs and build information | `~/.local/share/storytold/apps/APP/` |
+| Launch wrappers | `~/.local/share/storytold/launchers/` |
+| Application-menu entries | `~/.local/share/applications/storytold-APP.desktop` |
+| Installer and GUI logs | `~/.local/state/storytold/logs/` |
 
-- Downloads the upstream `main` branch ZIP archives and builds selected Rust packages in release mode.
-- Uses `RUSTFLAGS=-C target-cpu=native` to optimize builds for the current processor. These binaries are not necessarily portable to older CPUs.
-- Uses `D:\temp\StoryTold` when drive D: exists; otherwise `C:\temp\StoryTold`.
-- Displays build milestones, progress and an animated ASCII indicator.
-- Requests elevation for installation and desktop shortcut creation.
-- Prevents automatic system sleep and display timeout while the GUI is running; normal Windows behavior resumes when the GUI exits. Manual sleep and lid-close policies are not overridden.
-- Removes temporary build files and logs after a successful installation; retains them when an error occurs.
+`XDG_CACHE_HOME`, `XDG_DATA_HOME` and `XDG_STATE_HOME` are respected and must be absolute paths without line breaks or tabs. `CARGO_HOME` is respected for the Rust installation. Use a normal local filesystem with executable-file support.
 
-## Troubleshooting and resuming
+Cargo runs on every attempt and decides which existing build artifacts are still fresh; a binary's existence alone is never treated as proof of a successful current build. Artifact directories are separated by app and a fingerprint of the compiler, CPU model/features, distro and installed package versions. Repeating an unchanged build reuses its artifacts. An interrupted compile resumes through Cargo. A checkout with local modifications is rejected, not reset. If a fetch was interrupted, retry; if a checkout is damaged before Git was initialized, move that specific directory aside and retry.
 
-If compilation succeeds but the final installation fails, inspect the logs in the temporary StoryTold folder and rerun the launcher. The installer records resume state and can reuse completed builds where its state is intact. Keep the temporary folder until installation succeeds.
+Completed applications remain installed if a later app fails. A new executable replaces the old one only after a successful build and runtime-library check. Rerun the same selection after fixing the logged error. A lock prevents two simultaneous installer runs.
 
-If UAC was canceled or missed, launch again and approve the elevation request. For errors, review `installer_*.log`, `installer_*.log.errors.txt`, per-application Cargo logs, and `elevated_install.log` where present. The **Open log folder** button opens the working directory.
+Do not move caches to a different CPU to avoid recompilation. To force a full rebuild, move the relevant app's target directory aside. This installer does not clean caches automatically.
 
-A restart may be needed after installing Visual Studio Build Tools. The installer can register a one-time resume for the next Windows sign-in.
+## Sleep and shortcuts
 
-## Security and third-party software
+The backend runs under `systemd-inhibit --what=sleep:idle --mode=block` for the full operation, including dependency setup. If inhibition is unavailable or denied, it stops. To deliberately proceed without this protection, use `--allow-sleep` from the CLI. Inhibition is released when the process exits. It does not protect against power loss, forced shutdown, or every desktop's lid-close policy.
 
-This installer downloads and executes code from upstream GitHub repositories and may install development prerequisites. Review those repositories and their licenses before running. The source archives follow the upstream `main` branches rather than pinned releases, so builds may change over time. The upstream projects retain their own licenses and trademarks.
+Menu shortcuts are always created. `--desktop` also copies them to an existing XDG Desktop directory. Some file managers require **Allow Launching**. No default file associations are changed. Generic system icons are used; application branding assets are not redistributed.
 
-This repository contains installer scripts only, not the upstream application source code. No license is asserted for these installer scripts in this package; add a `LICENSE` file if you choose to publish them under a specific license.
+## Troubleshooting and removal
 
-## Files
+- Permission prompt missing: use the CLI in a terminal with sudo, or enable your desktop's PolicyKit agent.
+- apt error: resolve the named package/repository/lock issue and rerun; no alternate package names are guessed silently.
+- Compiler killed: reduce `--jobs` to 1 and check available RAM and disk space.
+- Missing runtime library: installation stops before replacing that app. Inspect the `ldd` output in the log.
+- Application does not open: run its installed executable from a terminal to see driver/runtime diagnostics. An installed binary and a clean `ldd` check do not prove successful graphical startup.
 
-- `Launch-StoryTold-Installer.bat`: Windows launcher.
-- `StoryTold-GUI.ps1`: graphical interface, progress display and sleep prevention.
-- `StoryTold-Installer.ps1`: prerequisites, source download, build, elevation and installation logic.
-- `.gitignore`: excludes local logs and temporary build artifacts.
-
-**Packaged from the working v15 installer.** The original installation logic is preserved; only filenames and cross-file references were updated.
+To remove an app, remove its specific `storytold-APP.desktop` menu/Desktop entries, its wrapper and its directory under `storytold/apps/`. Cache removal is optional. The installer does not remove shared apt packages, Rust, or application documents/settings.
