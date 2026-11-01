@@ -1,0 +1,5 @@
+linux/*.sh text eol=lf
+linux/*.py text eol=lf
+tests/*.sh text eol=lf
+*.md text eol=lf
+windows/* -text
