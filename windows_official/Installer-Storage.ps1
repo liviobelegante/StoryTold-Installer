@@ -20,7 +20,7 @@ function Assert-PlainDirectoryPath {
 
 # ----------- New-InstallerWorkFolder ----------
 function New-InstallerWorkFolder {
-    param([string]$Id, [string[]]$Roots = @('D:\Temp','C:\Temp'))
+    param([string]$Id, [string[]]$Roots = @('D:\Temp','C:\Temp',([IO.Path]::Combine($env:LOCALAPPDATA,'Temp'))))
     if ($Id -notmatch '^[a-f0-9]{32}$') { throw 'Invalid temporary operation identifier.' }
     $failures = @()
     foreach ($root in $Roots) {
@@ -36,13 +36,13 @@ function New-InstallerWorkFolder {
         }
         catch { $failures += $_.Exception.Message }
     }
-    throw ('Cannot create a writable temporary folder in D:\Temp or C:\Temp. ' + ($failures -join ' '))
+    throw ('Cannot create a writable temporary folder in: ' + ($Roots -join ', ') + '. ' + ($failures -join ' '))
 }
 # -----------------------------
 
 # ----------- Get-InstallerWorkFolder ----------
 function Get-InstallerWorkFolder {
-    param([string]$Path, [string]$Id, [string[]]$Roots = @('D:\Temp','C:\Temp'), [switch]$AllowMissing)
+    param([string]$Path, [string]$Id, [string[]]$Roots = @('D:\Temp','C:\Temp',([IO.Path]::Combine($env:LOCALAPPDATA,'Temp'))), [switch]$AllowMissing)
     if ($Id -notmatch '^[a-f0-9]{32}$') { throw 'Invalid cleanup identifier.' }
     $fullPath = [IO.Path]::GetFullPath($Path)
     # Build allowed paths without accessing drives: the preferred D: drive may be absent.
@@ -64,7 +64,7 @@ function Get-InstallerWorkFolder {
 
 # ----------- Remove-InstallerWorkFolder ----------
 function Remove-InstallerWorkFolder {
-    param([string]$Path, [string]$Id, [string[]]$Roots = @('D:\Temp','C:\Temp'))
+    param([string]$Path, [string]$Id, [string[]]$Roots = @('D:\Temp','C:\Temp',([IO.Path]::Combine($env:LOCALAPPDATA,'Temp'))))
     $fullPath = Get-InstallerWorkFolder $Path $Id $Roots -AllowMissing
     if (-not (Test-Path -LiteralPath $fullPath)) { return }
     $pending = [Collections.Generic.Stack[string]]::new()

@@ -1,4 +1,4 @@
-# SolidCraft source builds and local application discovery.
+﻿# SolidCraft source builds and local application discovery.
 
 # ----------- Convert-AppVersion ----------
 function Convert-AppVersion {
@@ -99,7 +99,7 @@ function Get-LocalApplication {
             if ($entry.DisplayIcon -match '^"?(.+?\.exe)"?(?:,\s*-?\d+)?$') { $candidates.Add($Matches[1]) }
     }
     $msiRegistrations=@()
-    if($App -ne 'SolidCraft') {
+    if($App) {
         $msiRegistrations=@(Get-MsiRegistrations $App)
         foreach($registration in $msiRegistrations){if($registration.Directory){$candidates.Add((Join-Path $registration.Directory ($repo+'.exe')))}}
     }
@@ -107,16 +107,26 @@ function Get-LocalApplication {
         if (-not $root) { continue }
         foreach ($folder in @($App, ('ArtCraft\' + $App), ('StoryTold\' + $App))) {
             $candidates.Add((Join-Path $root ($folder + '\' + $repo + '.exe')))
+            # Older installers used one version-named subdirectory per release.
+            $appRoot = Join-Path $root $folder
+            if ($App -eq 'SolidCraft' -and (Test-Path -LiteralPath $appRoot -PathType Container)) {
+                foreach ($versionFolder in @(Get-ChildItem -LiteralPath $appRoot -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^v?\d+\.\d+\.\d+(?:\.\d+)?$' -and -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) })) {
+                    $candidates.Add((Join-Path $versionFolder.FullName 'solidcraft.exe'))
+                }
+            }
         }
     }
     $shell = $null
     $link = $null
     try {
-        $desktop = [Environment]::GetFolderPath('DesktopDirectory')
-        if ($desktop -and (Test-Path -LiteralPath (Join-Path $desktop ($App + '.lnk')))) {
-            $shell = New-Object -ComObject WScript.Shell
-            $link = $shell.CreateShortcut((Join-Path $desktop ($App + '.lnk')))
-            if ($link.TargetPath) { $candidates.Add($link.TargetPath) }
+        $shell = New-Object -ComObject WScript.Shell
+        foreach ($desktop in @([Environment]::GetFolderPath('DesktopDirectory'),[Environment]::GetFolderPath('CommonDesktopDirectory'))) {
+            if ($desktop -and (Test-Path -LiteralPath (Join-Path $desktop ($App + '.lnk')))) {
+                $link = $shell.CreateShortcut((Join-Path $desktop ($App + '.lnk')))
+                if ($link.TargetPath) { $candidates.Add($link.TargetPath) }
+                [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($link)
+                $link = $null
+            }
         }
     }
     finally {
@@ -219,6 +229,10 @@ function Invoke-BuildCommand {
     if ($Name -eq 'cargo-build') { $state = 'Compiling' }
     Write-Status SolidCraft '' $state ("$Name. Output: $stdout; progress/errors: $stderr")
     $process = Start-Process -FilePath $Executable -ArgumentList $Arguments -WorkingDirectory $Directory -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+    if ($process.ExitCode -eq 3010) {
+        $script:dependencyRestartRequired = $true
+        Write-Status '' '' 'Dependency restart required' ("$Name requires a Windows restart.")
+    }
     if ($process.ExitCode -notin @(0,3010)) { throw "$Name failed (exit $($process.ExitCode)). See $stderr" }
 }
 # -----------------------------
@@ -229,6 +243,8 @@ function Find-BuildTool {
     $command = Get-Command $Name -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($command) { return $command.Source }
     $fallbacks = @((Join-Path $env:USERPROFILE ('.cargo\bin\' + $Name)))
+    if ($script:originalCargoHome) { $fallbacks = @((Join-Path $script:originalCargoHome ('bin\' + $Name))) + $fallbacks }
+    if ($Name -eq 'winget.exe') { $fallbacks += (Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\winget.exe') }
     if ($Name -eq 'git.exe') { $fallbacks += (Join-Path $env:ProgramFiles 'Git\cmd\git.exe') }
     foreach ($path in $fallbacks) { if (Test-Path -LiteralPath $path -PathType Leaf) { return $path } }
     return $null
@@ -238,26 +254,22 @@ function Find-BuildTool {
 # ----------- Install-BuildPrerequisites ----------
 function Install-BuildPrerequisites {
     param([bool]$AllowSetup)
-    $winget = Find-BuildTool 'winget.exe'
-    foreach ($tool in @(@('git.exe','Git.Git'), @('rustup.exe','Rustlang.Rustup'))) {
-        if (-not (Find-BuildTool $tool[0])) {
-            if (-not $AllowSetup -or -not $winget) { throw "Missing $($tool[0]). Install $($tool[1]) or enable build-tool setup with winget available." }
-            Invoke-BuildCommand $winget ('install --id ' + $tool[1] + ' --exact --source winget --accept-source-agreements --accept-package-agreements --disable-interactivity') $RunFolder ('setup-' + $tool[1])
-        }
-    }
-    $programs = ${env:ProgramFiles(x86)}
-    if (-not $programs) { $programs = $env:ProgramFiles }
-    $vswhere = Join-Path $programs 'Microsoft Visual Studio\Installer\vswhere.exe'
-    $vs = ''
-    if (Test-Path -LiteralPath $vswhere) { $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath }
-    if (-not $vs) {
-        if (-not $AllowSetup -or -not $winget) { throw 'C++ build tools missing. Enable build-tool setup or install Visual Studio Build Tools with Desktop development with C++ and Windows SDK.' }
-        $override = '--quiet --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended'
-        if ($Architecture -eq 'arm64') { $override += ' --add Microsoft.VisualStudio.Component.VC.Tools.ARM64' }
-        Invoke-BuildCommand $winget ('install --id Microsoft.VisualStudio.2022.BuildTools --exact --source winget --accept-source-agreements --accept-package-agreements --disable-interactivity --override "' + $override + '"') $RunFolder 'setup-cpp'
-    }
-    $env:PATH = [Environment]::GetEnvironmentVariable('PATH','Machine') + ';' + [Environment]::GetEnvironmentVariable('PATH','User') + ';' + (Join-Path $env:USERPROFILE '.cargo\bin')
-    foreach ($name in @('git.exe','rustup.exe','cargo.exe','rustc.exe')) { if (-not (Find-BuildTool $name)) { throw "Required tool still unavailable: $name. Restart Windows if requested, then retry." } }
+    # Keep the public function and the existing checkbox, centralize detailed checks.
+    Install-RequiredBuildTools $AllowSetup
+}
+# -----------------------------
+
+# ----------- Get-SourceGitArguments ----------
+function Get-SourceGitArguments {
+    param([string]$Directory)
+    # FAT/exFAT do not retain ownership. Trust only this operation's checked source
+    # directory, for these Git invocations; never change global safe.directory.
+    $work = Get-InstallerWorkFolder $script:WorkFolder ([string]$script:request.WorkId)
+    $prefix = [IO.Path]::Combine($work,'source') + '\'
+    $full = [IO.Path]::GetFullPath($Directory)
+    if (-not $full.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)) { throw 'Git source path is outside the owned work folder.' }
+    Assert-PlainDirectoryPath $full
+    return @('-c', ('safe.directory=' + $full.Replace('\','/')))
 }
 # -----------------------------
 
@@ -367,6 +379,10 @@ function Install-SolidCraftSource {
     $version = ''
     try {
         $local = Get-LocalApplication SolidCraft -Scope $script:request.Scope
+        if (-not $local) {
+            $other = Get-LocalApplication SolidCraft
+            if ($other) { Write-Status SolidCraft '' 'Other scope exists' ("Existing copy: $($other.Path) ($($other.Scope)). The selected $($script:request.Scope) scope uses a separate destination; the existing copy will be preserved.") }
+        }
         Write-Status SolidCraft '' Checking 'Checking tangency-labs/solidcraft and local installations.'
         $release = Invoke-RestMethod 'https://api.github.com/repos/tangency-labs/solidcraft/releases/latest' -Headers $headers -TimeoutSec 60
         if ($release.draft -or $release.prerelease -or -not (Convert-AppVersion $release.tag_name)) { throw 'No supported stable SolidCraft version was found.' }
@@ -376,6 +392,7 @@ function Install-SolidCraftSource {
         if ($commit -notmatch '^[a-f0-9]{40}$') { throw 'Invalid source commit received from GitHub.' }
         Write-Status SolidCraft $version 'Source verified' ("Release: $version; commit: $commit")
         if (Test-SourceCurrent $local $version $commit) {
+            Install-SolidCraftRuntime (Get-ExecutableArchitecture $local.Path)
             $detail = "Installed $($local.Version) at $($local.Path). No build required."
             try { $detail += ' Shortcut: ' + (New-ApplicationShortcut SolidCraft $local.Path); $state='Up to date' }
             catch { $detail += ' Shortcut warning: ' + $_.Exception.Message; $state='Up to date (shortcut warning)' }
@@ -387,39 +404,56 @@ function Install-SolidCraftSource {
         $cache = Join-Path $script:WorkFolder ('source\' + $commit + '-' + $Architecture)
         New-Item -ItemType Directory -Path $cache -Force | Out-Null
         $git = Find-BuildTool git.exe
-        if (-not (Test-Path -LiteralPath (Join-Path $cache '.git'))) { Invoke-BuildCommand $git 'init' $cache 'git-init' }
+        $gitSafe = @(Get-SourceGitArguments $cache)
+        $gitPrefix = '-c "' + $gitSafe[1] + '" '
+        if (-not (Test-Path -LiteralPath (Join-Path $cache '.git'))) { Invoke-BuildCommand $git ($gitPrefix + 'init') $cache 'git-init' }
         else {
-            $dirty = & $git -C $cache status --porcelain --untracked-files=all
+            $dirty = & $git @gitSafe -C $cache status --porcelain --untracked-files=all
             if ($LASTEXITCODE -ne 0 -or $dirty) { throw 'Source cache contains modified or untracked files. Refusing to overwrite it.' }
         }
-        Invoke-BuildCommand $git ('fetch --depth 1 https://github.com/tangency-labs/solidcraft.git ' + $commit) $cache 'git-fetch'
-        Invoke-BuildCommand $git ('checkout --detach --force ' + $commit) $cache 'git-checkout'
+        Invoke-BuildCommand $git ($gitPrefix + 'fetch --depth 1 https://github.com/tangency-labs/solidcraft.git ' + $commit) $cache 'git-fetch'
+        Invoke-BuildCommand $git ($gitPrefix + 'checkout --detach --force ' + $commit) $cache 'git-checkout'
         # This cache belongs to the installer. Refuse dirty sources rather than compiling modified code.
-        $head = & $git -C $cache rev-parse HEAD
+        $head = & $git @gitSafe -C $cache rev-parse HEAD
         if ($LASTEXITCODE -ne 0 -or $head -ne $commit) { throw 'Fetched source commit does not match the release.' }
-        $dirty = & $git -C $cache status --porcelain --untracked-files=all
+        $dirty = & $git @gitSafe -C $cache status --porcelain --untracked-files=all
         if ($LASTEXITCODE -ne 0 -or $dirty) { throw 'Source cache contains modified or untracked files. Use a clean cache before building.' }
         $manifest = [IO.File]::ReadAllText((Join-Path $cache 'Cargo.toml'))
-        if ($manifest -notmatch '(?m)^rust-version\s*=\s*"(\d+\.\d+)(?:\.\d+)?"') { throw 'Required Rust version is not specified in Cargo.toml.' }
-        $minimum = [version]($Matches[1] + '.0')
+        if ($manifest -notmatch '(?m)^rust-version\s*=\s*"(\d+\.\d+(?:\.\d+)?)"') { throw 'Required Rust version is not specified in Cargo.toml.' }
+        $minimumText = $Matches[1]
+        if (($minimumText -split '\.').Count -eq 2) { $minimumText += '.0' }
+        $minimum = [version]$minimumText
         $rustup = Find-BuildTool rustup.exe
-        $rustVersion = & (Find-BuildTool rustc.exe) +stable --version 2>$null
-        if ($LASTEXITCODE -ne 0 -or $rustVersion -notmatch 'rustc (\d+\.\d+\.\d+)' -or [version]$Matches[1] -lt $minimum) {
+        $rustVersion = Get-RustStableVersion $rustup
+        if (-not $rustVersion -or $rustVersion -lt $minimum) {
             if (-not $script:request.SetupBuildTools) { throw "Rust stable $minimum or newer is required. Enable build-tool setup." }
-            Invoke-BuildCommand $rustup 'update stable' $cache 'rust-update'
+            Invoke-BuildCommand $rustup 'toolchain install stable --profile minimal' $cache 'rust-update'
+            $rustVersion = Get-RustStableVersion $rustup
+            if (-not $rustVersion -or $rustVersion -lt $minimum) { throw 'Rust stable could not be verified after setup.' }
         }
         $target = switch ($Architecture) { x64 {'x86_64-pc-windows-msvc'}; arm64 {'aarch64-pc-windows-msvc'}; x86 {'i686-pc-windows-msvc'}; default {throw 'Unsupported build architecture.'} }
-        Invoke-BuildCommand $rustup ('target add ' + $target + ' --toolchain stable') $cache 'rust-target'
+        $targets = @(& $rustup target list --installed --toolchain stable)
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect installed Rust targets.' }
+        if ($targets -notcontains $target) {
+            if (-not $script:request.SetupBuildTools) { throw "Rust target $target is missing. Enable build-tool setup." }
+            Invoke-BuildCommand $rustup ('target add ' + $target + ' --toolchain stable') $cache 'rust-target'
+            $targets = @(& $rustup target list --installed --toolchain stable)
+            if ($LASTEXITCODE -ne 0 -or $targets -notcontains $target) { throw 'Rust target could not be verified after setup.' }
+        }
         Write-Status SolidCraft $version Compiling 'Compiling desktop app from the pinned stable release. The first build can take a long time. See cargo-build-error.log for progress.'
-        Invoke-BuildCommand (Find-BuildTool cargo.exe) ('+stable build --locked --release --target ' + $target + ' --target-dir "' + (Join-Path $cache 'target') + '" -p solidcraft') $cache 'cargo-build'
+        Invoke-BuildCommand $rustup ('run stable cargo build --locked --release --target ' + $target + ' --target-dir "' + (Join-Path $cache 'target') + '" -p solidcraft') $cache 'cargo-build'
         $binary = Join-Path $cache ('target\' + $target + '\release\solidcraft.exe')
         if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) { throw 'Build finished without the expected solidcraft.exe.' }
         $builtVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($binary).ProductVersion
         if ((Convert-AppVersion $builtVersion) -ne (Convert-AppVersion $version)) { throw 'Compiled executable version does not match the stable release.' }
+        Install-SolidCraftRuntime (Get-ExecutableArchitecture $binary)
         $programs = ${env:ProgramFiles(x86)}
         if (-not $programs) { $programs = $env:ProgramFiles }
         $destination = Join-Path $programs 'StoryTold\solid-main\target\release'
         if ($script:request.Scope -eq 'CurrentUser') {$destination=Join-Path $env:LOCALAPPDATA 'Programs\StoryToldCraft\SolidCraft'}
+        if ($local -and (Split-Path -LiteralPath $local.Path) -ine $destination) {
+            Write-Status SolidCraft $version 'Installation location' ("The existing copy at $($local.Path) is not in this installer's managed directory. It will be preserved; the new source build and shortcut use $destination.")
+        }
         # A user may have reopened the application during a long source build.
         Close-RunningApplication SolidCraft
         $installed = Invoke-SourcePublication $binary $destination $version $commit

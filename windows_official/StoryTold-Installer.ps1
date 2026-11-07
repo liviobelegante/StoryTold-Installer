@@ -1,9 +1,11 @@
-param([switch]$Worker, [string]$RunFolder, [string]$Architecture, [switch]$SelfTest)
+﻿param([switch]$Worker, [string]$RunFolder, [string]$Architecture, [switch]$SelfTest)
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $catalog = @('WordCraft','GridCraft','DeckCraft','PDFCraft','CADCraft','SolidCraft')
-$headers = @{ 'User-Agent' = 'StoryTold-Signed-GUI/3.4'; 'Accept' = 'application/vnd.github+json' }
+$headers = @{ 'User-Agent' = 'StoryTold-Signed-GUI/3.5'; 'Accept' = 'application/vnd.github+json' }
 . (Join-Path $PSScriptRoot 'Installer-Storage.ps1')
+. (Join-Path $PSScriptRoot 'Installer-Prerequisites.ps1')
+. (Join-Path $PSScriptRoot 'Installer-Progress.ps1')
 . (Join-Path $PSScriptRoot 'SolidCraft-Source.ps1')
 
 # ----------- Get-Architecture ----------
@@ -63,12 +65,12 @@ function Get-InstalledExecutable {
         $installer = New-Object -ComObject WindowsInstaller.Installer
         $database = $installer.OpenDatabase($Msi, 0)
         $productView = $database.OpenView("SELECT ``Value`` FROM ``Property`` WHERE ``Property`` = 'ProductCode'")
-        $productView.Execute()
+        [void]$productView.Execute()
         $productRecord = $productView.Fetch()
         if (-not $productRecord) { throw 'MSI ProductCode was not found.' }
         $productCode = $productRecord.StringData(1)
         $fileView = $database.OpenView('SELECT `File`.`File`, `File`.`FileName`, `Component`.`ComponentId`, `Component`.`KeyPath` FROM `File`, `Component` WHERE `File`.`Component_` = `Component`.`Component`')
-        $fileView.Execute()
+        [void]$fileView.Execute()
         while ($record = $fileView.Fetch()) {
             try {
                 $fileName = ($record.StringData(2) -split '\|')[-1]
@@ -84,7 +86,7 @@ function Get-InstalledExecutable {
         throw "Windows Installer could not locate the installed $App executable."
     }
     finally {
-        foreach ($view in @($fileView, $productView)) { if ($view) { $view.Close() } }
+        foreach ($view in @($fileView, $productView)) { if ($view) { [void]$view.Close() } }
         foreach ($object in @($productRecord, $fileView, $productView, $database, $installer)) {
             if ($object) { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($object) }
         }
@@ -174,11 +176,11 @@ function Assert-MsiScopeSupport {
         $installer=New-Object -ComObject WindowsInstaller.Installer
         $database=$installer.OpenDatabase($Msi,0)
         $view=$database.OpenView("SELECT ``Value`` FROM ``Property`` WHERE ``Property`` = 'ALLUSERS'")
-        $view.Execute();$record=$view.Fetch()
+        [void]$view.Execute();$record=$view.Fetch()
         if (-not $record -or $record.StringData(1) -ne '2') {throw 'This MSI does not declare the expected dual-scope support. Installation is blocked instead of ignoring your scope choice.'}
     }
     finally {
-        if($view){$view.Close()}
+        if($view){[void]$view.Close()}
         foreach($object in @($record,$view,$database,$installer)){if($object){[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($object)}}
     }
 }
@@ -308,6 +310,9 @@ function Invoke-InstallWorker {
     $savedTemp = $env:TEMP
     $savedTmp = $env:TMP
     $savedCargo = $env:CARGO_HOME
+    $script:originalCargoHome = $savedCargo
+    $script:dependencyRestartRequired = $false
+    $script:checkedVCRuntimes = @{}
     $script:WorkFolder = $null
     try {
         $script:request = Get-Content -LiteralPath (Join-Path $RunFolder 'request.json') -Raw | ConvertFrom-Json
@@ -344,6 +349,9 @@ public static class StoryToldPower {
         if (-not $awake) { throw 'Windows standby prevention could not be enabled. Installation has not started.' }
         Write-Status '' '' 'Standby prevention active' 'Automatic system sleep and display timeout are prevented until all work and temporary cleanup finish.'
         foreach ($app in $selected) {
+            if ($script:request.Mode -eq 'Install' -and $app -ne 'SolidCraft') {
+                Write-Status $app '' 'Dependencies checked' 'Official MSI bundles its C/C++ runtime; no separate .NET Runtime is required.'
+            }
             $local = Get-LocalApplication $app -Scope $script:request.Scope
             $text = 'Not detected'
             if ($local) { $text=$local.Version; if (-not $text) {$text='Unknown version'} }
@@ -408,6 +416,7 @@ function Refresh-InstallScope {
 function Show-Installer {
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
+    Initialize-InstallerSpinner
     [Windows.Forms.Application]::EnableVisualStyles()
     $script:form = New-Object Windows.Forms.Form
     $form.Text = 'StoryTold Craft | Install and update'
@@ -484,14 +493,19 @@ function Show-Installer {
     $log.SetBounds(26,434,888,170)
     $log.Anchor = 'Top,Bottom,Left,Right'
     $log.Text = "Save your work and close the selected apps before installing.`r`nSolidCraft: tangency-labs/solidcraft, latest stable release, pinned commit, backup and rollback."
-    $log.AppendText("`r`nDownloads and build files: D:\Temp (C:\Temp fallback), removed when the operation finishes.`r`nHover an application or scroll right to see its installed path.")
+    $log.AppendText("`r`nTemporary files: D:\Temp, C:\Temp or your local Temp folder; removed when finished.`r`nRequired missing dependencies are installed automatically. Windows may request approval.`r`nHover an application or scroll right to see its installed path.")
     $log.AppendText("`r`nAutomatic standby and display timeout are prevented while an operation is running.`r`nScope checkbox applies to all selected apps. Changing an existing MSI scope requires uninstalling that copy first.`r`nSolidCraft: all users uses the original StoryTold folder; current user uses AppData\Local\Programs\StoryToldCraft\SolidCraft.")
     $form.Controls.AddRange(@($list,$log))
     $script:status = New-Object Windows.Forms.Label
-    $status.SetBounds(26,615,888,28)
+    $status.SetBounds(64,615,850,36)
     $status.Anchor = 'Bottom,Left,Right'
     $status.Text = 'Ready | ' + (Get-Architecture)
     $form.Controls.Add($status)
+    $script:spinner = New-Object StoryTold.Spinner
+    $spinner.SetBounds(26,615,28,28)
+    $spinner.Anchor = 'Bottom,Left'
+    $spinner.Active = $false
+    $form.Controls.Add($spinner)
     $script:install = New-Object Windows.Forms.Button
     $install.Text = 'Install / update selected'
     $install.SetBounds(26,656,250,42)
@@ -539,7 +553,7 @@ function Show-Installer {
     })
     Refresh-InstallScope
     try { [void]$form.ShowDialog() }
-    finally { $timer.Stop(); $timer.Dispose(); $form.Dispose() }
+    finally { $spinner.Active = $false; $timer.Stop(); $timer.Dispose(); $form.Dispose() }
 }
 # -----------------------------
 
@@ -557,6 +571,9 @@ function Start-Installation {
         $script:activeWorkFolder = New-InstallerWorkFolder $workId
         $createdWork = $script:activeWorkFolder
         $script:seen = 0
+        $script:eventOffset = [long]0
+        $script:drainOffset = [long]-1
+        $script:dependencyRestartRequired = $false
         $script:completed = $false
         $script:fatal = $false
         $script:cleanupWarning = $false
@@ -579,10 +596,12 @@ function Start-Installation {
         $allUsers.Enabled = $false
         $openLogs.Enabled = $true
         $status.Text = "$mode selected applications..."
+        $spinner.Active = $true
         $timer.Start()
     }
     catch {
         $message = $_.Exception.Message
+        if (-not $workerStarted) { $spinner.Active = $false }
         if ($createdWork -and -not $workerStarted) {
             try { Remove-InstallerWorkFolder $createdWork $workId } catch { $message += ' Temporary cleanup failed: ' + $_.Exception.Message }
         }
@@ -596,9 +615,7 @@ function Update-Progress {
     try {
         $eventFile = Join-Path $script:activeFolder 'events.jsonl'
         if (Test-Path -LiteralPath $eventFile) {
-            $lines = @([IO.File]::ReadAllLines($eventFile))
-            for ($index=$script:seen; $index -lt $lines.Count; $index++) {
-                try { $event = $lines[$index] | ConvertFrom-Json } catch { break }
+            foreach ($event in @(Read-InstallerEvents $eventFile)) {
                 if ($event.App -and $rows.ContainsKey($event.App)) {
                     if ($event.Version) { $rows[$event.App].SubItems[2].Text = $event.Version }
                     if ($event.State -notin @('Local version','Installed path')) { $rows[$event.App].SubItems[3].Text = $event.State }
@@ -609,11 +626,20 @@ function Update-Progress {
                 if ($event.State -eq 'Complete' -or $event.State -eq 'Fatal') { $script:completed = $true }
                 if ($event.State -eq 'Fatal') { $script:fatal = $true }
                 if ($event.State -eq 'Cleanup warning') { $script:cleanupWarning = $true }
-                $script:seen = $index + 1
+                if ($event.State -eq 'Dependency restart required') { $script:dependencyRestartRequired = $true }
+                $status.Text = ($event.App + ' | ' + $event.State).Trim(' ','|')
             }
         }
         if ($script:workerProcess.HasExited) {
+            # Drain remaining complete events on later ticks before displaying the final result.
+            if ((Test-Path -LiteralPath $eventFile) -and (Get-Item -LiteralPath $eventFile).Length -gt $script:eventOffset) {
+                if ($script:drainOffset -ne $script:eventOffset) { $script:drainOffset = $script:eventOffset; return }
+                $script:fatal = $true
+                $log.AppendText("The worker stopped with an incomplete log entry. See worker-error.log.`r`n")
+            }
             $timer.Stop()
+            $spinner.Active = $false
+            if ($script:workerProcess.ExitCode -ne 0) { $script:fatal = $true }
             $install.Enabled = $true
             $check.Enabled = $true
             $list.Enabled = $true
@@ -628,11 +654,18 @@ function Update-Progress {
             elseif ($script:completed) { $status.Text = "Finished | Failed: $failed | Unavailable: $unavailable | Shortcut warnings: $warnings | See logs." }
             else { $status.Text = 'Installer stopped unexpectedly. Check logs and try again.' }
             if ($script:cleanupWarning) { $status.Text += ' Temporary cleanup incomplete.' }
-            if ($restartRequired) { $status.Text += ' Windows restart required.' }
+            if ($restartRequired -or $script:dependencyRestartRequired) { $status.Text += ' Windows restart required.' }
             if ($scopeChanges) { $status.Text += " Scope changes needed: $scopeChanges." }
         }
     }
-    catch { $status.Text = 'Waiting for installer status...' }
+    catch {
+        $status.Text = 'Unable to read installer status. See logs.'
+        if ($script:workerProcess -and $script:workerProcess.HasExited) {
+            $timer.Stop(); $spinner.Active = $false
+            $install.Enabled = $true; $check.Enabled = $true; $list.Enabled = $true
+            $setup.Enabled = $true; $allUsers.Enabled = $true
+        }
+    }
 }
 # -----------------------------
 
