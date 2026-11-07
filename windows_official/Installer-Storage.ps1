@@ -1,4 +1,4 @@
-# Temporary work directories belong to one installer operation only.
+﻿# Temporary work directories belong to one installer operation only.
 
 # ----------- Assert-PlainDirectoryPath ----------
 function Assert-PlainDirectoryPath {
@@ -45,7 +45,9 @@ function Get-InstallerWorkFolder {
     param([string]$Path, [string]$Id, [string[]]$Roots = @('D:\Temp','C:\Temp'), [switch]$AllowMissing)
     if ($Id -notmatch '^[a-f0-9]{32}$') { throw 'Invalid cleanup identifier.' }
     $fullPath = [IO.Path]::GetFullPath($Path)
-    $allowed = @($Roots | ForEach-Object { [IO.Path]::GetFullPath((Join-Path $_ ('StoryToldCraft\' + $Id))) })
+    # Build allowed paths without accessing drives: the preferred D: drive may be absent.
+    # Keep the exact operation-folder allowlist and ownership checks unchanged.
+    $allowed = @($Roots | ForEach-Object { [IO.Path]::GetFullPath([IO.Path]::Combine($_, ('StoryToldCraft\' + $Id))) })
     if ($fullPath -notin $allowed) { throw "Cleanup refused outside the owned temporary folder: $fullPath" }
     if (-not (Test-Path -LiteralPath $fullPath)) {
         if ($AllowMissing) { return $fullPath }
