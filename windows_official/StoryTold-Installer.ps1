@@ -227,7 +227,7 @@ function Install-OfficialApp {
         $opposite='AllUsers'
         if ($script:request.Scope -eq 'AllUsers') {$opposite='CurrentUser'}
         if (@(Get-RegisteredMsiScopes $App) -contains $opposite) {
-            Write-Status $App $version 'Scope change required' 'Uninstall the existing MSI copy in Windows Settings > Apps before changing installation scope. No automatic uninstall is performed.'
+            Write-InstallScopeHelp $App $version
             return
         }
         $latestNumber = Convert-AppVersion $version
@@ -577,6 +577,7 @@ function Start-Installation {
         $script:completed = $false
         $script:fatal = $false
         $script:cleanupWarning = $false
+        $script:scopeHelp = @{}
         foreach ($app in $catalog) { $rows[$app].SubItems[3].Text = 'Not selected' }
         foreach ($app in $selected) { $rows[$app].SubItems[3].Text = 'Waiting' }
         $mode='Install'
@@ -627,6 +628,10 @@ function Update-Progress {
                 if ($event.State -eq 'Fatal') { $script:fatal = $true }
                 if ($event.State -eq 'Cleanup warning') { $script:cleanupWarning = $true }
                 if ($event.State -eq 'Dependency restart required') { $script:dependencyRestartRequired = $true }
+                if ($event.State -in @('Check Install for all users','Uncheck Install for all users')) {
+                    $script:scopeHelp[$event.App] = $event.Detail
+                    $rows[$event.App].ToolTipText = $event.Detail
+                }
                 $status.Text = ($event.App + ' | ' + $event.State).Trim(' ','|')
             }
         }
@@ -649,13 +654,17 @@ function Update-Progress {
             $unavailable = @($catalog | Where-Object { $rows[$_].SubItems[3].Text -eq 'Unavailable' }).Count
             $warnings = @($catalog | Where-Object { $rows[$_].SubItems[3].Text -like '*shortcut warning*' }).Count
             $restartRequired = @($catalog | Where-Object { $rows[$_].SubItems[3].Text -like 'Restart required*' }).Count
-            $scopeChanges = @($catalog | Where-Object { $rows[$_].SubItems[3].Text -eq 'Scope change required' }).Count
+            $scopeChanges = $script:scopeHelp.Count
             if ($script:fatal) { $status.Text = 'Installation could not finish. See the error above and open logs.' }
             elseif ($script:completed) { $status.Text = "Finished | Failed: $failed | Unavailable: $unavailable | Shortcut warnings: $warnings | See logs." }
             else { $status.Text = 'Installer stopped unexpectedly. Check logs and try again.' }
             if ($script:cleanupWarning) { $status.Text += ' Temporary cleanup incomplete.' }
             if ($restartRequired -or $script:dependencyRestartRequired) { $status.Text += ' Windows restart required.' }
-            if ($scopeChanges) { $status.Text += " Scope changes needed: $scopeChanges." }
+            if ($scopeChanges) {
+                $status.Text = "$scopeChanges app(s) need a different 'Install for all users' setting. See the instructions shown."
+                $helpText = @($catalog | Where-Object { $script:scopeHelp.ContainsKey($_) } | ForEach-Object { $script:scopeHelp[$_] }) -join "`r`n`r`n"
+                [void][Windows.Forms.MessageBox]::Show($script:form, $helpText, 'How to continue the update', [Windows.Forms.MessageBoxButtons]::OK, [Windows.Forms.MessageBoxIcon]::Information)
+            }
         }
     }
     catch {

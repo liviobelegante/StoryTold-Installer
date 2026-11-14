@@ -183,6 +183,20 @@ function Get-RegisteredMsiScopes {
 }
 # -----------------------------
 
+# ----------- Write-InstallScopeHelp ----------
+function Write-InstallScopeHelp {
+    param([string]$App, [string]$Version)
+    if ($script:request.Scope -eq 'CurrentUser') {
+        $state = 'Check Install for all users'
+        $detail = "$App is already installed for all users, but this run is set to install for the current user only. To update the existing copy, check 'Install for all users', then click 'Install / update selected'. If you want a current-user installation instead, first uninstall the existing copy in Windows Settings > Apps, then run this installer with the checkbox unchecked."
+    } else {
+        $state = 'Uncheck Install for all users'
+        $detail = "$App is already installed for the current user only, but this run is set to install for all users. To update the existing copy, uncheck 'Install for all users', then click 'Install / update selected'. If you want an all-users installation instead, first uninstall the existing copy in Windows Settings > Apps, then run this installer with the checkbox checked."
+    }
+    Write-Status $App $Version $state $detail
+}
+# -----------------------------
+
 # ----------- Check-AppVersion ----------
 function Check-AppVersion {
     param([string]$App)
@@ -213,7 +227,7 @@ function Check-AppVersion {
         if ($App -ne 'SolidCraft') {
             $opposite='AllUsers'
             if ($script:request.Scope -eq 'AllUsers') {$opposite='CurrentUser'}
-            if (@(Get-RegisteredMsiScopes $App) -contains $opposite) {Write-Status $App $release.tag_name 'Scope change required' 'The official MSI requires uninstalling the existing copy before changing installation scope. No automatic uninstall is performed.'}
+            if (@(Get-RegisteredMsiScopes $App) -contains $opposite) {Write-InstallScopeHelp $App $release.tag_name}
         }
     }
     catch {Write-Status $App '' Failed $_.Exception.Message}
