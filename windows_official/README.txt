@@ -1,9 +1,9 @@
-StoryTold Craft Installer 3.6.1
+StoryTold Craft Installer 3.6.2
 17 November 2026
 
 INSTALL
 1) Extract the entire ZIP.
-2) Open Install-StoryTold.bat.
+2) Open the windows_official folder, then double-click Install-StoryTold.bat.
 3) SolidCraft is selected by default. Select other apps if wanted.
 4) Click Install / update selected.
 5) Wait for Finished and check the Status column. Use the desktop shortcut to open the app.
@@ -36,6 +36,10 @@ Unchecked Install for all users means your account; checked means all users.
 The rule is applied separately to each selected application, including version checks.
 Scroll right to see Target scope. The log also shows the scope used for each app.
 Windows may request administrator approval for an all-users installation.
+An MSI that supports only one installation scope is accepted when it matches the target.
+If a new app's MSI cannot use the selected scope, the error explains which checkbox setting is needed.
+An existing installation is never silently moved to another scope.
+All-users MSI installations explicitly request Windows administrator approval.
 
 DOWNLOAD VERIFICATION
 Only assets from the expected official GitHub release are accepted.
@@ -55,6 +59,8 @@ If an app fails, read its Status and the error in the window, then Open logs.
 Logs: %LOCALAPPDATA%\StoryToldSignedInstaller\logs
 Temporary downloads are removed after processing. No forced restart.
 If Windows requests a restart, restart and run the installer again.
+If an MSI log reports 'Install server not responding', close other installers and retry;
+restart Windows if the problem persists. Error 1603 is not automatically retried.
 
 OFFICIAL SOLIDCRAFT DOWNLOADS
 https://github.com/tangency-labs/solidcraft/releases/latest

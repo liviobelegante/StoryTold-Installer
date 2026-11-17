@@ -2,7 +2,7 @@ param([switch]$Worker, [string]$RunFolder, [string]$Architecture, [switch]$SelfT
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $catalog = @('WordCraft','GridCraft','DeckCraft','PDFCraft','CADCraft','SolidCraft')
-$headers = @{ 'User-Agent' = 'StoryTold-Official-GUI/3.6.1'; 'Accept' = 'application/vnd.github+json' }
+$headers = @{ 'User-Agent' = 'StoryTold-Official-GUI/3.6.2'; 'Accept' = 'application/vnd.github+json' }
 . (Join-Path $PSScriptRoot 'Installer-Storage.ps1')
 . (Join-Path $PSScriptRoot 'Installer-Prerequisites.ps1')
 . (Join-Path $PSScriptRoot 'Installer-Progress.ps1')
@@ -170,8 +170,8 @@ try {
 }
 # -----------------------------
 
-# ----------- Assert-MsiScopeSupport ----------
-function Assert-MsiScopeSupport {
+# ----------- Get-MsiScopeMode ----------
+function Get-MsiScopeMode {
     param([string]$Msi)
     $installer=$null;$database=$null;$view=$null;$record=$null
     try {
@@ -179,12 +179,31 @@ function Assert-MsiScopeSupport {
         $database=$installer.OpenDatabase($Msi,0)
         $view=$database.OpenView("SELECT ``Value`` FROM ``Property`` WHERE ``Property`` = 'ALLUSERS'")
         [void]$view.Execute();$record=$view.Fetch()
-        if (-not $record -or $record.StringData(1) -ne '2') {throw 'This MSI does not declare the expected dual-scope support. Installation is blocked instead of ignoring your scope choice.'}
+        $value = ''
+        if ($record) { $value = [string]$record.StringData(1) }
+        switch ($value) {
+            '2' { return 'Dual' }
+            '1' { return 'AllUsers' }
+            '' { return 'CurrentUser' }
+            default { throw "Unsupported ALLUSERS value in MSI: $value" }
+        }
     }
     finally {
         if($view){[void]$view.Close()}
         foreach($object in @($record,$view,$database,$installer)){if($object){[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($object)}}
     }
+}
+# -----------------------------
+
+# ----------- Assert-MsiScopeSupport ----------
+function Assert-MsiScopeSupport {
+    param([string]$Msi)
+    $mode = Get-MsiScopeMode $Msi
+    if ($mode -eq 'Dual' -or $mode -eq $script:request.Scope) { return }
+    if ($mode -eq 'AllUsers') {
+        throw "This official MSI supports installation for all users only. Check 'Install for all users' for a new app. An existing current-user copy cannot be updated in place by this MSI."
+    }
+    throw "This official MSI supports installation for your account only. Uncheck 'Install for all users' for a new app. An existing all-users copy cannot be updated in place by this MSI."
 }
 # -----------------------------
 
@@ -270,18 +289,23 @@ function Install-OfficialApp {
                 Write-Status $App $version 'Verified' ("Publisher: " + $signature.SignerCertificate.Subject)
             }
             Assert-MsiScopeSupport $msi
+            $msiScopeMode = Get-MsiScopeMode $msi
             Close-RunningApplication $App
             $msiLog = Join-Path $RunFolder "$repo-msi.log"
             Write-Status $App $version 'Installing' 'Windows Installer is running. Windows may request administrator approval.'
             $arguments = '/i "' + $msi + '" /passive /norestart /L*v "' + $msiLog + '"'
             if ($script:request.Scope -eq 'AllUsers') {$arguments+=' ALLUSERS=1 MSIINSTALLPERUSER="" DESKTOPSHORTCUT=1'}
-            else {$arguments+=' ALLUSERS=2 MSIINSTALLPERUSER=1 DESKTOPSHORTCUT=1'}
-            $process = Start-Process -FilePath "$env:SystemRoot\System32\msiexec.exe" -ArgumentList $arguments -Wait -PassThru
+            elseif ($msiScopeMode -eq 'Dual') {$arguments+=' ALLUSERS=2 MSIINSTALLPERUSER=1 DESKTOPSHORTCUT=1'}
+            else {$arguments+=' ALLUSERS="" MSIINSTALLPERUSER="" DESKTOPSHORTCUT=1'}
+            $startOptions = @{FilePath="$env:SystemRoot\System32\msiexec.exe"; ArgumentList=$arguments; Wait=$true; PassThru=$true}
+            if ($script:request.Scope -eq 'AllUsers') { $startOptions.Verb = 'RunAs' }
+            $process = Start-Process @startOptions
             switch ($process.ExitCode) {
                 0 { $resultState = 'Installed'; $resultDetail = 'Windows Installer completed successfully.' }
                 3010 { $resultState = 'Restart required'; $resultDetail = 'Installed successfully. Restart Windows when convenient.' }
                 1641 { $resultState = 'Restart required'; $resultDetail = 'Windows Installer reported a restart was initiated.' }
                 1602 { throw 'Installation canceled or administrator approval declined.' }
+                1603 { throw "Windows Installer failed (1603). See $msiLog. If the log says 'Install server not responding', retry after closing other installers; restart Windows if the problem persists." }
                 default { throw "Windows Installer exit code $($process.ExitCode). See $msiLog" }
             }
             $script:registrySnapshot=$null
@@ -585,6 +609,8 @@ function Start-Installation {
         $architectureName = Get-Architecture
         $arguments = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "' + $PSCommandPath + '" -Worker -RunFolder "' + $script:activeFolder + '" -Architecture ' + $architectureName
         $script:workerProcess = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList $arguments -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $script:activeFolder 'worker-output.log') -RedirectStandardError (Join-Path $script:activeFolder 'worker-error.log')
+        # Retain the handle so .NET can obtain the exit code after the process ends.
+        $null = $script:workerProcess.Handle
         $workerStarted = $true
         $install.Enabled = $false
         $check.Enabled = $false
@@ -636,7 +662,8 @@ function Update-Progress {
             }
             $timer.Stop()
             $spinner.Active = $false
-            if ($script:workerProcess.ExitCode -ne 0) { $script:fatal = $true }
+            $script:workerProcess.WaitForExit()
+            if ($null -ne $script:workerProcess.ExitCode -and $script:workerProcess.ExitCode -ne 0) { $script:fatal = $true }
             $install.Enabled = $true
             $check.Enabled = $true
             $list.Enabled = $true
