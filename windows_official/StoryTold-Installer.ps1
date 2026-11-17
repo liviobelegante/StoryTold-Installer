@@ -1,12 +1,12 @@
-﻿param([switch]$Worker, [string]$RunFolder, [string]$Architecture, [switch]$SelfTest)
+param([switch]$Worker, [string]$RunFolder, [string]$Architecture, [switch]$SelfTest)
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $catalog = @('WordCraft','GridCraft','DeckCraft','PDFCraft','CADCraft','SolidCraft')
-$headers = @{ 'User-Agent' = 'StoryTold-Signed-GUI/3.5'; 'Accept' = 'application/vnd.github+json' }
+$headers = @{ 'User-Agent' = 'StoryTold-Official-GUI/3.6.1'; 'Accept' = 'application/vnd.github+json' }
 . (Join-Path $PSScriptRoot 'Installer-Storage.ps1')
 . (Join-Path $PSScriptRoot 'Installer-Prerequisites.ps1')
 . (Join-Path $PSScriptRoot 'Installer-Progress.ps1')
-. (Join-Path $PSScriptRoot 'SolidCraft-Source.ps1')
+. (Join-Path $PSScriptRoot 'Installer-Applications.ps1')
 
 # ----------- Get-Architecture ----------
 function Get-Architecture {
@@ -44,9 +44,11 @@ function Get-ExpectedHash {
 # ----------- Save-ReleaseAsset ----------
 function Save-ReleaseAsset {
     param($Asset, [string]$Repo, [string]$Destination)
+    $owner = 'storytold'
+    if ($Repo -eq 'solidcraft') { $owner = 'tangency-labs' }
     $url = [uri]$Asset.browser_download_url
     if ($url.Scheme -ne 'https' -or $url.Host -ne 'github.com' -or
-        -not $url.AbsolutePath.StartsWith("/storytold/$Repo/releases/download/", [StringComparison]::Ordinal)) {
+        -not $url.AbsolutePath.StartsWith("/$owner/$Repo/releases/download/", [StringComparison]::Ordinal)) {
         throw 'Download URL does not belong to the expected official repository.'
     }
     Invoke-WebRequest -UseBasicParsing -Uri $url.AbsoluteUri -OutFile $Destination -Headers $headers -TimeoutSec 600
@@ -210,10 +212,14 @@ function Close-RunningApplication {
 function Install-OfficialApp {
     param([string]$App)
     $repo = $App.ToLowerInvariant()
+    $owner = 'storytold'
+    if ($App -eq 'SolidCraft') { $owner = 'tangency-labs' }
     $version = ''
     Write-Status $App '' 'Checking' 'Looking for the latest stable official release.'
     try {
-        try { $release = Invoke-RestMethod -Uri "https://api.github.com/repos/storytold/$repo/releases/latest" -Headers $headers -TimeoutSec 60 }
+        $script:request.Scope = Resolve-ApplicationScope $App $script:request.Scope
+        Write-Status $App '' 'Installation scope' $script:request.Scope
+        try { $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$owner/$repo/releases/latest" -Headers $headers -TimeoutSec 60 }
         catch {
             if ($_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 404) {
                 Write-Status $App '' 'Unavailable' 'No public repository or stable release is available at the official address.'
@@ -224,21 +230,15 @@ function Install-OfficialApp {
         if ($release.draft -or $release.prerelease) { throw 'The release is not stable.' }
         $version = [string]$release.tag_name
         $local = Get-LocalApplication $App -Scope $script:request.Scope
-        $opposite='AllUsers'
-        if ($script:request.Scope -eq 'AllUsers') {$opposite='CurrentUser'}
-        if (@(Get-RegisteredMsiScopes $App) -contains $opposite) {
-            Write-InstallScopeHelp $App $version
-            return
-        }
         $latestNumber = Convert-AppVersion $version
-        if ($local -and $local.Number -and $latestNumber -and $local.Number -ge $latestNumber) {
+        if ($local -and $local.Number -and $latestNumber -and $local.Number -ge $latestNumber -and ($App -ne 'SolidCraft' -or @(Get-RegisteredMsiScopes $App) -contains $script:request.Scope)) {
             $detail = "Installed $($local.Version) at $($local.Path). Latest stable: $version. No installation required."
             try { $detail += ' Shortcut: ' + (New-ApplicationShortcut $App $local.Path); $state='Up to date' }
             catch { $detail += ' Shortcut warning: ' + $_.Exception.Message; $state='Up to date (shortcut warning)' }
             Write-Status $App $version $state $detail
             return
         }
-        $pattern = '^' + [regex]::Escape($repo) + '-[0-9][0-9A-Za-z.\-]*-windows-' + $Architecture + '\.msi$'
+        $pattern = '^' + [regex]::Escape($repo) + '-' + [regex]::Escape($version.TrimStart('v')) + '-windows-' + $Architecture + '\.msi$'
         $msis = @($release.assets | Where-Object { $_.name -cmatch $pattern })
         $sums = @($release.assets | Where-Object { $_.name -ceq 'SHA256SUMS.txt' })
         if ($msis.Count -ne 1 -or $sums.Count -ne 1) { throw "No unique official $Architecture MSI and checksum file were found." }
@@ -257,12 +257,18 @@ function Install-OfficialApp {
             Write-Status $App $version 'Verifying' 'Checking SHA-256 and Windows Authenticode signature.'
             if ((Get-FileHash -LiteralPath $msi -Algorithm SHA256).Hash -ne $expected) { throw 'SHA-256 mismatch. Installation blocked.' }
             $signature = Get-AuthenticodeSignature -LiteralPath $msi
-            if ($signature.Status -ne 'Valid' -or -not $signature.SignerCertificate) { throw "Invalid digital signature: $($signature.Status). Installation blocked." }
-            # Pin the publisher organization while allowing certificate renewal.
-            if ($signature.SignerCertificate.Subject -notmatch '(?:^|,\s*)O=Learning Machines Inc(?:,|$)') {
-                throw "Unexpected publisher: $($signature.SignerCertificate.Subject). Installation blocked."
+            if ($App -eq 'SolidCraft' -and $signature.Status -eq 'NotSigned') {
+                Write-Status $App $version 'Verified checksum' 'Official SolidCraft MSI is unsigned. Repository URL and SHA-256 verified.'
             }
-            Write-Status $App $version 'Verified' ("Publisher: " + $signature.SignerCertificate.Subject + '; certificate: ' + $signature.SignerCertificate.Thumbprint)
+            else {
+                if ($signature.Status -ne 'Valid' -or -not $signature.SignerCertificate) {
+                    throw "Invalid digital signature: $($signature.Status). Installation blocked."
+                }
+                if ($App -ne 'SolidCraft' -and $signature.SignerCertificate.Subject -notmatch '(?:^|,\s*)O=Learning Machines Inc(?:,|$)') {
+                    throw "Unexpected publisher: $($signature.SignerCertificate.Subject). Installation blocked."
+                }
+                Write-Status $App $version 'Verified' ("Publisher: " + $signature.SignerCertificate.Subject)
+            }
             Assert-MsiScopeSupport $msi
             Close-RunningApplication $App
             $msiLog = Join-Path $RunFolder "$repo-msi.log"
@@ -309,10 +315,7 @@ function Invoke-InstallWorker {
     $operationCompleted = $false
     $savedTemp = $env:TEMP
     $savedTmp = $env:TMP
-    $savedCargo = $env:CARGO_HOME
-    $script:originalCargoHome = $savedCargo
     $script:dependencyRestartRequired = $false
-    $script:checkedVCRuntimes = @{}
     $script:WorkFolder = $null
     try {
         $script:request = Get-Content -LiteralPath (Join-Path $RunFolder 'request.json') -Raw | ConvertFrom-Json
@@ -327,11 +330,11 @@ function Invoke-InstallWorker {
         if (-not $selected.Count -or @($selected | Where-Object { $_ -notin $catalog }).Count) { throw 'Invalid application selection.' }
         if ($script:request.Mode -notin @('Check','Install')) { throw 'Invalid operation.' }
         if ($script:request.Scope -notin @('CurrentUser','AllUsers')) {throw 'Invalid installation scope.'}
-        Write-Status '' '' 'Installation scope' $script:request.Scope
+        $preferredScope = [string]$script:request.Scope
+        Write-Status '' '' 'Scope preference' ($preferredScope + '. Existing apps keep their sole installed scope; new or dual-scope apps use this preference.')
         $env:TEMP = Join-Path $script:WorkFolder 'os-temp'
         $env:TMP = $env:TEMP
-        $env:CARGO_HOME = Join-Path $script:WorkFolder 'cargo-home'
-        New-Item -ItemType Directory -Path $env:TEMP,$env:CARGO_HOME -Force | Out-Null
+        New-Item -ItemType Directory -Path $env:TEMP -Force | Out-Null
         Write-Status '' '' 'Work folder' ("Temporary files: $script:WorkFolder. They will be removed when the operation finishes.")
         Add-Type -TypeDefinition @'
 using System;
@@ -344,21 +347,20 @@ public static class StoryToldPower {
 }
 '@
         # ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED.
-        # Hold the request during downloads, compilation, UAC, installation and cleanup.
+        # Hold the request during downloads, UAC, installation and cleanup.
         $awake = [StoryToldPower]::SetThreadExecutionState([uint32]2147483651) -ne 0
         if (-not $awake) { throw 'Windows standby prevention could not be enabled. Installation has not started.' }
         Write-Status '' '' 'Standby prevention active' 'Automatic system sleep and display timeout are prevented until all work and temporary cleanup finish.'
         foreach ($app in $selected) {
-            if ($script:request.Mode -eq 'Install' -and $app -ne 'SolidCraft') {
-                Write-Status $app '' 'Dependencies checked' 'Official MSI bundles its C/C++ runtime; no separate .NET Runtime is required.'
-            }
+            # Resolve independently for each app. Never inherit the previous app's scope.
+            $script:request.Scope = Resolve-ApplicationScope $app $preferredScope
+            Write-Status $app '' 'Installation scope' $script:request.Scope
             $local = Get-LocalApplication $app -Scope $script:request.Scope
             $text = 'Not detected'
             if ($local) { $text=$local.Version; if (-not $text) {$text='Unknown version'} }
             Write-Status $app '' 'Local version' $text
             if ($local) { Write-Status $app '' 'Installed path' $local.Path }
             if ($script:request.Mode -eq 'Check') { Check-AppVersion $app }
-            elseif ($app -eq 'SolidCraft') { Install-SolidCraftSource }
             else { Install-OfficialApp $app }
             if ($script:request.Mode -eq 'Install') {
                 $script:registrySnapshot = $null
@@ -373,10 +375,9 @@ public static class StoryToldPower {
     finally {
         $env:TEMP = $savedTemp
         $env:TMP = $savedTmp
-        $env:CARGO_HOME = $savedCargo
         if ($script:WorkFolder) {
             for ($retry=0; $retry -lt 3; $retry++) {
-                try { Remove-InstallerWorkFolder $script:WorkFolder ([string]$script:request.WorkId); Write-Status '' '' 'Cleanup complete' 'Downloaded packages, sources, Cargo cache and temporary build files were removed.'; break }
+                try { Remove-InstallerWorkFolder $script:WorkFolder ([string]$script:request.WorkId); Write-Status '' '' 'Cleanup complete' 'Temporary downloads were removed.'; break }
                 catch { if ($retry -lt 2) { Start-Sleep -Milliseconds 500 } else { Write-Status '' '' 'Cleanup warning' $_.Exception.Message } }
             }
         }
@@ -393,22 +394,22 @@ public static class StoryToldPower {
 
 # ----------- Refresh-InstallScope ----------
 function Refresh-InstallScope {
-    $scope='CurrentUser'
-    if ($script:allUsers.Checked) {$scope='AllUsers'}
+    $preferredScope='CurrentUser'
+    if ($script:allUsers.Checked) {$preferredScope='AllUsers'}
+    $script:registrySnapshot=$null
+    $script:msiSnapshot=$null
     foreach ($app in $catalog) {
+        $scope=Resolve-ApplicationScope $app $preferredScope
         $local=Get-LocalApplication $app -Scope $scope
         $text='Not detected';$path='';$state='Ready'
         if($local){$text=$local.Version;$path=$local.Path;if(-not $text){$text='Unknown version'}}
-        else {
-            $other=Get-LocalApplication $app
-            if($other){$text='Not in selected scope';$path=$other.Path;$state='Other scope exists'}
-        }
         $rows[$app].SubItems[1].Text=$text
         $rows[$app].SubItems[3].Text=$state
         $rows[$app].SubItems[4].Text=$path
-        $rows[$app].ToolTipText=$path
+        $rows[$app].ToolTipText=($scope + ': ' + $path)
+        $rows[$app].SubItems[5].Text=$scope
     }
-    $script:status.Text='Ready | '+(Get-Architecture)+' | Scope: '+$scope
+    $script:status.Text='Ready | '+(Get-Architecture)+' | New apps / both scopes: '+$preferredScope
 }
 # -----------------------------
 
@@ -435,7 +436,7 @@ function Show-Installer {
     $subtitle.SetBounds(26,70,890,28)
     $form.Controls.Add($subtitle)
     $notice = New-Object Windows.Forms.Label
-    $notice.Text = 'SolidCraft is compiled from its latest stable source (unsigned local build). Other apps use signed MSI packages.'
+    $notice.Text = 'Official installers for all apps. SolidCraft is unsigned; its download checksum is verified.'
     $notice.SetBounds(26,104,890,42)
     $form.Controls.Add($notice)
     $all = New-Object Windows.Forms.Button
@@ -446,13 +447,9 @@ function Show-Installer {
     $none.Text = 'Select none'
     $none.SetBounds(141,148,115,30)
     $none.Add_Click({ if ($script:list.Enabled) { foreach ($item in $script:list.Items) { $item.Checked=$false } } })
-    $script:setup = New-Object Windows.Forms.CheckBox
-    $setup.Text = 'Set up missing build tools for SolidCraft (large downloads, may request UAC)'
-    $setup.Checked = $true
-    $setup.SetBounds(274,148,640,32)
-    $form.Controls.AddRange(@($all,$none,$setup))
+    $form.Controls.AddRange(@($all,$none))
     $script:allUsers=New-Object Windows.Forms.CheckBox
-    $allUsers.Text='Install for all users (Program Files, requires administrator approval). Unchecked: current user only.'
+    $allUsers.Text='Install for all users. Applies to new apps and apps installed in both scopes.'
     $allUsers.Checked=$false
     $allUsers.SetBounds(26,183,888,29)
     $allUsers.Add_CheckedChanged({if($script:list -and $script:list.Enabled){Refresh-InstallScope}})
@@ -469,11 +466,12 @@ function Show-Installer {
     [void]$list.Columns.Add('Latest stable',140)
     [void]$list.Columns.Add('Status',390)
     [void]$list.Columns.Add('Installed path',650)
+    [void]$list.Columns.Add('Target scope',140)
     $list.ShowItemToolTips = $true
     $script:rows = @{}
     foreach ($app in $catalog) {
         $row = New-Object Windows.Forms.ListViewItem($app)
-        $row.Checked = $true
+        $row.Checked = ($app -eq 'SolidCraft')
         $local = Get-LocalApplication $app
         $installedText = 'Not detected'
         if ($local) { $installedText = $local.Version; if (-not $installedText) { $installedText='Unknown version' } }
@@ -483,6 +481,7 @@ function Show-Installer {
         $installedPath = ''
         if ($local) { $installedPath=$local.Path; $row.ToolTipText=$installedPath }
         [void]$row.SubItems.Add($installedPath)
+        [void]$row.SubItems.Add('')
         [void]$list.Items.Add($row)
         $script:rows[$app] = $row
     }
@@ -492,9 +491,7 @@ function Show-Installer {
     $log.ScrollBars = 'Vertical'
     $log.SetBounds(26,434,888,170)
     $log.Anchor = 'Top,Bottom,Left,Right'
-    $log.Text = "Save your work and close the selected apps before installing.`r`nSolidCraft: tangency-labs/solidcraft, latest stable release, pinned commit, backup and rollback."
-    $log.AppendText("`r`nTemporary files: D:\Temp, C:\Temp or your local Temp folder; removed when finished.`r`nRequired missing dependencies are installed automatically. Windows may request approval.`r`nHover an application or scroll right to see its installed path.")
-    $log.AppendText("`r`nAutomatic standby and display timeout are prevented while an operation is running.`r`nScope checkbox applies to all selected apps. Changing an existing MSI scope requires uninstalling that copy first.`r`nSolidCraft: all users uses the original StoryTold folder; current user uses AppData\Local\Programs\StoryToldCraft\SolidCraft.")
+    $log.Text = "1) Select the apps you want.`r`n2) Click Install / update selected.`r`nExisting apps keep their installation scope automatically.`r`nNew apps or apps in both scopes use the checkbox (unchecked = your account).`r`nSave your work and close the selected apps first. Windows may request administrator approval."
     $form.Controls.AddRange(@($list,$log))
     $script:status = New-Object Windows.Forms.Label
     $status.SetBounds(64,615,850,36)
@@ -577,14 +574,13 @@ function Start-Installation {
         $script:completed = $false
         $script:fatal = $false
         $script:cleanupWarning = $false
-        $script:scopeHelp = @{}
         foreach ($app in $catalog) { $rows[$app].SubItems[3].Text = 'Not selected' }
         foreach ($app in $selected) { $rows[$app].SubItems[3].Text = 'Waiting' }
         $mode='Install'
         if ($CheckOnly) { $mode='Check' }
         $scope='CurrentUser'
         if($allUsers.Checked){$scope='AllUsers'}
-        @{Apps=$selected; Mode=$mode; Scope=$scope; SetupBuildTools=[bool]$setup.Checked; WorkFolder=$script:activeWorkFolder; WorkId=$workId} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $script:activeFolder 'request.json') -Encoding UTF8
+        @{Apps=$selected; Mode=$mode; Scope=$scope; WorkFolder=$script:activeWorkFolder; WorkId=$workId} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $script:activeFolder 'request.json') -Encoding UTF8
         $log.Clear()
         $architectureName = Get-Architecture
         $arguments = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "' + $PSCommandPath + '" -Worker -RunFolder "' + $script:activeFolder + '" -Architecture ' + $architectureName
@@ -593,7 +589,6 @@ function Start-Installation {
         $install.Enabled = $false
         $check.Enabled = $false
         $list.Enabled = $false
-        $setup.Enabled = $false
         $allUsers.Enabled = $false
         $openLogs.Enabled = $true
         $status.Text = "$mode selected applications..."
@@ -619,7 +614,8 @@ function Update-Progress {
             foreach ($event in @(Read-InstallerEvents $eventFile)) {
                 if ($event.App -and $rows.ContainsKey($event.App)) {
                     if ($event.Version) { $rows[$event.App].SubItems[2].Text = $event.Version }
-                    if ($event.State -notin @('Local version','Installed path')) { $rows[$event.App].SubItems[3].Text = $event.State }
+                    if ($event.State -notin @('Local version','Installed path','Installation scope')) { $rows[$event.App].SubItems[3].Text = $event.State }
+                    if ($event.State -eq 'Installation scope') { $rows[$event.App].SubItems[5].Text = $event.Detail }
                     if ($event.State -eq 'Installed path') { $rows[$event.App].SubItems[4].Text=$event.Detail; $rows[$event.App].ToolTipText=$event.Detail }
                     if ($event.State -eq 'Local version') { $rows[$event.App].SubItems[1].Text = $event.Detail }
                 }
@@ -628,10 +624,6 @@ function Update-Progress {
                 if ($event.State -eq 'Fatal') { $script:fatal = $true }
                 if ($event.State -eq 'Cleanup warning') { $script:cleanupWarning = $true }
                 if ($event.State -eq 'Dependency restart required') { $script:dependencyRestartRequired = $true }
-                if ($event.State -in @('Check Install for all users','Uncheck Install for all users')) {
-                    $script:scopeHelp[$event.App] = $event.Detail
-                    $rows[$event.App].ToolTipText = $event.Detail
-                }
                 $status.Text = ($event.App + ' | ' + $event.State).Trim(' ','|')
             }
         }
@@ -648,23 +640,16 @@ function Update-Progress {
             $install.Enabled = $true
             $check.Enabled = $true
             $list.Enabled = $true
-            $setup.Enabled = $true
             $allUsers.Enabled = $true
             $failed = @($catalog | Where-Object { $rows[$_].SubItems[3].Text -in @('Failed','Scope verification failed') }).Count
             $unavailable = @($catalog | Where-Object { $rows[$_].SubItems[3].Text -eq 'Unavailable' }).Count
             $warnings = @($catalog | Where-Object { $rows[$_].SubItems[3].Text -like '*shortcut warning*' }).Count
             $restartRequired = @($catalog | Where-Object { $rows[$_].SubItems[3].Text -like 'Restart required*' }).Count
-            $scopeChanges = $script:scopeHelp.Count
             if ($script:fatal) { $status.Text = 'Installation could not finish. See the error above and open logs.' }
             elseif ($script:completed) { $status.Text = "Finished | Failed: $failed | Unavailable: $unavailable | Shortcut warnings: $warnings | See logs." }
             else { $status.Text = 'Installer stopped unexpectedly. Check logs and try again.' }
             if ($script:cleanupWarning) { $status.Text += ' Temporary cleanup incomplete.' }
             if ($restartRequired -or $script:dependencyRestartRequired) { $status.Text += ' Windows restart required.' }
-            if ($scopeChanges) {
-                $status.Text = "$scopeChanges app(s) need a different 'Install for all users' setting. See the instructions shown."
-                $helpText = @($catalog | Where-Object { $script:scopeHelp.ContainsKey($_) } | ForEach-Object { $script:scopeHelp[$_] }) -join "`r`n`r`n"
-                [void][Windows.Forms.MessageBox]::Show($script:form, $helpText, 'How to continue the update', [Windows.Forms.MessageBoxButtons]::OK, [Windows.Forms.MessageBoxIcon]::Information)
-            }
         }
     }
     catch {
@@ -672,7 +657,7 @@ function Update-Progress {
         if ($script:workerProcess -and $script:workerProcess.HasExited) {
             $timer.Stop(); $spinner.Active = $false
             $install.Enabled = $true; $check.Enabled = $true; $list.Enabled = $true
-            $setup.Enabled = $true; $allUsers.Enabled = $true
+            $allUsers.Enabled = $true
         }
     }
 }

@@ -1,4 +1,4 @@
-﻿# ----------- Initialize-InstallerSpinner ----------
+# ----------- Initialize-InstallerSpinner ----------
 function Initialize-InstallerSpinner {
     # A WinForms timer animates independently of log polling; all painting stays on the UI thread.
     if ('StoryTold.Spinner' -as [type]) { return }

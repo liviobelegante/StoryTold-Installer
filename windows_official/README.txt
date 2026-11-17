@@ -1,101 +1,61 @@
-﻿StoryTold Craft installer 3.5 - 7 November 2026
+StoryTold Craft Installer 3.6.1
+17 November 2026
 
-QUICK START
-Extract the entire windows_official folder. Keep all eight files together.
-Double-click Install-StoryTold-Signed.bat. Select applications and installation scope,
-then choose Check versions or Install / update selected.
-Replace the complete folder when upgrading from 3.4, not just the BAT file.
-Save documents before installation; application closure is graceful, never forced.
+INSTALL
+1) Extract the entire ZIP.
+2) Open Install-StoryTold.bat.
+3) SolidCraft is selected by default. Select other apps if wanted.
+4) Click Install / update selected.
+5) Wait for Finished and check the Status column. Use the desktop shortcut to open the app.
 
-HOST REQUIREMENTS
-Windows 10 build 17763 or later, working Windows PowerShell 5.1, and .NET Framework
-4.8 or later are the supported launcher baseline in this version.
-The BAT verifies that PowerShell starts. The startup helper checks the Framework
-Release value in both registry views. On x86/x64, an older Framework is upgraded
-with Microsoft's signed 4.8 offline installer. No automatic reboot is requested.
-If a reboot is needed, restart Windows and run the BAT again.
-ARM64 Framework repair uses Windows Update. If Windows PowerShell cannot start
-because Windows components are missing/damaged, the BAT gives a visible repair
-message. A PowerShell script cannot repair its own entirely absent runtime before
-that runtime can start. Modern .NET Runtime/SDK and Framework 3.5 are not installed.
+Save your work and close selected apps before installing.
+Accept Windows administrator approval if requested.
+Keep all files together. Do not run files from inside the ZIP.
 
-APPLICATION DEPENDENCIES
-WordCraft, GridCraft, DeckCraft, PDFCraft and CADCraft use official signed MSI
-packages. Current upstream packaging embeds the C/C++ runtime with +crt-static.
-They do not require a separate .NET Runtime. WiX/.NET used to produce those MSI
-packages is a publisher build dependency, not needed to install the finished MSI.
-Windows system libraries and graphics drivers remain Windows-managed components.
+WHAT CHANGED
+SolidCraft now uses the official Windows MSI from tangency-labs/solidcraft.
+It is downloaded ready to install. Rust, Git and Visual Studio Build Tools are no longer installed.
+The other five apps continue to use their official signed MSI packages.
+All interface text is in English.
 
-SolidCraft is compiled locally from its latest stable release and exact Git commit.
-It is unsigned. Our inherited Cargo compilation uses the dynamic MSVC CRT.
-The installer checks the matching x86/x64/ARM64 Visual C++ v14 redistributable before
-publication, including for an already-current detected installation. It downloads
-Microsoft's signed current package to determine the required version, installs
-only if the registered version is older/missing, and verifies registration again.
-An already-current application is not rebuilt merely to check its runtime.
+UPDATES
+Run this installer again to check for and install new stable releases.
+Check versions only checks: it does not install an application.
+The script does not enable or promise updates inside SolidCraft.
+Same or newer installed MSI versions are skipped.
+A detected loose/local SolidCraft build can be migrated to the official MSI.
+The MSI controls its installation folder and Windows Apps registration.
+The desktop shortcut points to the MSI-installed application.
 
-When a source build is required, the default-enabled build-tool option checks:
-- Working Git and Rustup; missing/unusable tools are installed through WinGet.
-- Working WinGet when Git/Rust setup needs it; Microsoft's documented PowerShell
-  bootstrap is used if unavailable (NuGet provider and Microsoft.WinGet.Client).
-- C++ compiler, linker, headers/libraries and a complete architecture-matching SDK.
-- Rust stable meeting Cargo.toml's full minimum version, including its patch level.
-- Required MSVC Rust target, installed only when missing.
-Incomplete VS 2022 Build Tools installations are modified to add missing components;
-otherwise the signed Microsoft Build Tools bootstrapper is used. SDK 10.0.26100
-is requested when the existing SDK/compiler setup is incomplete.
-Tools are verified after setup. A dependency failure blocks the affected build.
-Disabling build-tool setup prevents automatic Git/Rust/C++/SDK setup; runtime checks
-remain automatic. Internet is required. Policy restrictions/UAC refusal can prevent
-setup. Package-manager checksum checks are never bypassed.
+INSTALLATION SCOPE
+Installed only for your account: automatically update that copy.
+Installed only for all users: automatically update that copy.
+Installed in both scopes: the checkbox selects which copy to update.
+New application: the checkbox selects where to install it.
+Unchecked Install for all users means your account; checked means all users.
+The rule is applied separately to each selected application, including version checks.
+Scroll right to see Target scope. The log also shows the scope used for each app.
+Windows may request administrator approval for an all-users installation.
 
-SCOPE AND EXISTING INSTALLATIONS
-Unchecked scope: current user. Checked: all users, with administrator approval.
-Choose the scope matching the copy you want to update. Detection is scope-specific.
-Version-named SolidCraft folders and personal/public desktop links are searched.
-A CLI-only folder is not considered an installed SolidCraft desktop app.
-Same/newer existing versions are skipped; managed builds also verify receipt/hash
-and commit. Older installations outside the managed destination are preserved.
-The new source build uses the managed destination and updates the desktop shortcut;
-the log explains when an older copy remains in another location. Arbitrary folders
-discovered through shortcuts are not replaced.
+DOWNLOAD VERIFICATION
+Only assets from the expected official GitHub release are accepted.
+Each MSI must match its entry in the release SHA256SUMS.txt.
+WordCraft, GridCraft, DeckCraft, PDFCraft and CADCraft require a valid
+Learning Machines Inc digital signature.
+SolidCraft may be unsigned, as documented by its publisher.
+An invalid or damaged signature is rejected. SHA-256 remains mandatory.
+A checksum confirms the download matches the published package; it is not a publisher signature.
 
-Managed SolidCraft current-user destination:
-%LOCALAPPDATA%\Programs\StoryToldCraft\SolidCraft\solidcraft.exe
-Managed all-users destination (Program Files fallback on 32-bit Windows):
-C:\Program Files (x86)\StoryTold\solid-main\target\release\solidcraft.exe
-Official MSI packages choose their own folders and retain the existing scope rules.
-Changing an installed MSI's scope requires uninstalling that copy first, as before.
-
-TEMPORARY FILES, LOGS AND BACKUPS
-Work roots: D:\Temp, then C:\Temp, then %LOCALAPPDATA%\Temp.
-Only an operation's uniquely named, ownership-marked folder is removed.
-Missing drives no longer break validation/cleanup. Reparse-point and exact-path
-checks remain enabled. Git trusts only the checked source folder per command;
-no global safe.directory exception or wildcard is installed.
-Persistent Git/Rust tools are not installed in disposable Cargo dependency storage.
-App download/source/build files are removed after processing. Available VS setup
-logs are copied out before temporary cleanup.
+REQUIREMENTS AND ERRORS
+Internet, Windows 10 version 1809 or later, Windows PowerShell 5.1,
+and .NET Framework 4.8 or later. The launcher checks these and can
+install Microsoft's signed Framework package if needed.
+Windows updates and graphics drivers remain managed by Windows.
+If an app fails, read its Status and the error in the window, then Open logs.
 Logs: %LOCALAPPDATA%\StoryToldSignedInstaller\logs
-Startup logs: startup-<date-time>-<id> under the same logs folder.
-Managed SolidCraft updates keep a timestamped previous release and roll back the
-directory swap on publication failure. Unrelated applications/data are preserved.
+Temporary downloads are removed after processing. No forced restart.
+If Windows requests a restart, restart and run the installer again.
 
-PROGRESS AND RESTARTS
-The circle animates on its own UI timer while the worker runs, including cleanup.
-It stops when work ends or the worker exits with an error. It indicates activity,
-not a fabricated percentage or guaranteed network progress.
-Progress reads newly appended complete UTF-8 events instead of rereading all logs.
-Dependency restart requests remain visible in the final status. No forced reboot.
-Automatic sleep/display-timeout prevention and operation locking are retained.
+OFFICIAL SOLIDCRAFT DOWNLOADS
+https://github.com/tangency-labs/solidcraft/releases/latest
 
-VALIDATION
-43 checks passed under Windows PowerShell 5.1 on x64: absent-drive fallback, owned
-cleanup, real local Git ownership regression, version/scope detection, current
-SolidCraft skip, missing Rust stable, mocked dependency setup, signature rejection,
-restart tracking, UTF-8 partial events, publication rollback and spinner start/stop.
-The real form was rendered and inspected with fixture data.
-No real prerequisite install, MSI upgrade, UAC elevation or SolidCraft compilation
-was performed for 3.5. ARM64/x86 install/reboot paths remain untested on hardware.
-Test-Installer.ps1 and official sources/change locations are in the package.
-docs/README-3.4-HISTORY.txt is historical, not current requirements.

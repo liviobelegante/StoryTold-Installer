@@ -1,4 +1,4 @@
-﻿param([switch]$SelfTest)
+param([switch]$SelfTest)
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 . (Join-Path $PSScriptRoot 'Installer-Storage.ps1')

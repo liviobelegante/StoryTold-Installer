@@ -1,4 +1,4 @@
-﻿# Temporary work directories belong to one installer operation only.
+# Temporary work directories belong to one installer operation only.
 
 # ----------- Assert-PlainDirectoryPath ----------
 function Assert-PlainDirectoryPath {
